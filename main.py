@@ -1,17 +1,35 @@
 import os
 import random
 import asyncio
+from threading import Thread
 import discord
 from discord.ext import commands
+from flask import Flask
+
+# --- 🌐 EXTRA: FLASK WEB SERVER FOR RENDER FREE TIER ---
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is online and awake!"
+
+def run_flask():
+    # This dynamically reads Render's requested system port
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    """Starts the web server on a separate background thread."""
+    t = Thread(target=run_flask)
+    t.start()
+# --------------------------------------------------------
 
 intents = discord.Intents.default()
 intents.message_content = True
 intents.reactions = True # CRUCIAL: Gives bot permission to read heart reacts
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# --- 🚀 HOW TO ADD PHOTOS: ---
-# Change the "https://..." links below to real image URLs from Google or a Wiki!
-# Make sure the links end in .jpg, .png, or .gif for Discord to render them properly.
+# --- 🚀 CHARACTER DATA ---
 GUINEVERE_CHARACTERS = [
     # --- GODLY (Purple) ---
     {"name": "Princess Guinevere", "rarity": "🌌 Godly", "color": 0x9400D3, "image": "https://share.google", "weight": 1},
@@ -45,10 +63,9 @@ GUINEVERE_CHARACTERS = [
 ]
 
 user_gacha_backpack = {}
-active_rolls = {} # Tracks active message IDs to stop double-claim/double-roll bugs
+active_rolls = {}
 
 def is_valid_discord_image(url: str) -> bool:
-    """Validates if a URL has an explicit web protocol and a valid image extension."""
     clean_url = url.split('?')[0].lower()
     valid_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.webp')
     return url.startswith(('http://', 'https://')) and clean_url.endswith(valid_extensions)
@@ -61,7 +78,6 @@ async def on_ready():
 @commands.cooldown(1, 10, commands.BucketType.user)
 async def roll(ctx):
     weights = [char["weight"] for char in GUINEVERE_CHARACTERS]
-    # FIXED: Added [0] to extract the single chosen dictionary out of the returned list
     picked = random.choices(GUINEVERE_CHARACTERS, weights=weights, k=1)[0]
 
     embed = discord.Embed(
@@ -72,7 +88,6 @@ async def roll(ctx):
     embed.add_field(name="Character Spotted", value=f"**{picked['name']}**", inline=False)
     embed.add_field(name="Rarity Rank", value=picked['rarity'], inline=True)
     
-    # Image validation check before passing it to Discord's embed property
     if is_valid_discord_image(picked['image']):
         embed.set_image(url=picked['image'])
     else:
@@ -81,10 +96,8 @@ async def roll(ctx):
     msg = await ctx.send(embed=embed)
     await msg.add_reaction("❤️")
 
-    # Store this roll session in memory
     active_rolls[msg.id] = {"character": picked, "claimed": False}
 
-    # Automatically clean up or expire after 15 seconds
     await asyncio.sleep(15)
     if msg.id in active_rolls:
         if not active_rolls[msg.id]["claimed"]:
@@ -96,18 +109,13 @@ async def roll(ctx):
             except discord.HTTPException:
                 pass
 
-# --- THE HEART REACTION CLAIM ACTION LOOP ---
 @bot.event
 async def on_raw_reaction_add(payload):
-    if payload.user_id == bot.user.id:
-        return
-
-    if str(payload.emoji) != "❤️":
+    if payload.user_id == bot.user.id or str(payload.emoji) != "❤️":
         return
 
     if payload.message_id in active_rolls:
         session = active_rolls[payload.message_id]
-        
         if session["claimed"]:
             return
             
@@ -115,18 +123,15 @@ async def on_raw_reaction_add(payload):
         picked_char = session["character"]
         user_id = payload.user_id
 
-        # Update user inventory
         if user_id not in user_gacha_backpack:
             user_gacha_backpack[user_id] = []
         user_gacha_backpack[user_id].append(picked_char["name"])
 
-        # Clean up session memory
         del active_rolls[payload.message_id]
 
         channel = bot.get_channel(payload.channel_id)
         if channel:
             user = await bot.fetch_user(user_id)
-            # Sends a definitive "Character claimed!" statement when the reaction occurs
             await channel.send(f"🌟 **Character claimed!** {user.mention} added **{picked_char['name']}** ({picked_char['rarity']}) to their backpack!")
 
 @bot.command()
@@ -156,10 +161,9 @@ async def roll_error(ctx, error):
         await ctx.send(f"⏳ Wait **{error.retry_after:.1f}** seconds before rolling again!")
 
 # --- START CONFIGURATION ---
-# The bot runs safely only when initialized here.
-# To keep the bot offline, don't run this file or leave your token out of your environment keys.
 TOKEN = os.getenv("DISCORD_TOKEN")
 if TOKEN:
+    keep_alive() # Starts Flask web server right before launching the bot
     bot.run(TOKEN)
 else:
-    print("Bot Offline: No valid DISCORD_TOKEN was found in your system's setup.")
+    print("Bot Offline: No valid DISCORD_TOKEN was found.")
